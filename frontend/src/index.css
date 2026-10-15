@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+:root {
+  --color-brand: #6b7f5e;       /* Ayurvedic green */
+  --color-brand-dark: #4a5c40;
+  --color-accent: #c8974a;      /* Warm saffron */
+  --color-surface: #faf9f6;     /* Off-white */
+}
+
+body {
+  background-color: var(--color-surface);
+  font-family: 'Inter', system-ui, sans-serif;
+}
