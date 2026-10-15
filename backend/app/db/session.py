@@ -9,12 +9,17 @@ if db_url.startswith("postgres://"):
 elif db_url.startswith("postgresql://") and not db_url.startswith("postgresql+psycopg://"):
     db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
-# SQLite needs check_same_thread=False; PostgreSQL ignores it
-connect_args = (
-    {"check_same_thread": False} if db_url.startswith("sqlite") else {}
-)
+# SQLite needs check_same_thread=False; PostgreSQL uses pool_pre_ping and pool_recycle
+if db_url.startswith("sqlite"):
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
+else:
+    # Neon Serverless PostgreSQL recommended pooling options
+    engine = create_engine(
+        db_url,
+        pool_pre_ping=True,
+        pool_recycle=300,
+    )
 
-engine = create_engine(db_url, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

@@ -25,13 +25,13 @@ from app.models import (
     UserRole,
 )
 
-import os
+from sqlalchemy.pool import StaticPool
 
-TEST_DB_PATH = "test_workflow.db"
-if os.path.exists(TEST_DB_PATH):
-    os.remove(TEST_DB_PATH)
-
-engine = create_engine(f"sqlite:///{TEST_DB_PATH}", connect_args={"check_same_thread": False})
+engine = create_engine(
+    "sqlite:///:memory:",
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -101,11 +101,6 @@ def setup_database():
     yield
 
     Base.metadata.drop_all(bind=engine)
-    if os.path.exists(TEST_DB_PATH):
-        try:
-            os.remove(TEST_DB_PATH)
-        except Exception:
-            pass
 
 
 def get_token(user_id: str, role: str) -> dict:

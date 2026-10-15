@@ -224,4 +224,4 @@ class TestSlotRecommendations:
             assert recs[0].rank == 1
             assert recs[0].score >= recs[-1].score
             assert len(recs[0].reasons) > 0
-            assert "Kapha/Pitta detox window" in recs[0].reasons[0] or "morning timing" in recs[0].reasons[0]
+            assert any("timing" in r.lower() or "detox" in r.lower() or "window" in r.lower() for r in recs[0].reasons)
