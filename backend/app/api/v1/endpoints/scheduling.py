@@ -85,6 +85,26 @@ class CheckInRequest(BaseModel):
     session_id: str
 
 
+class RecommendSlotsRequest(BaseModel):
+    therapy_id: str
+    patient_id: str
+    duration_minutes: int = 60
+    preferred_start_date: Optional[date] = None
+    top_n: int = 3
+
+
+class RankedSlotOut(BaseModel):
+    slot_start: datetime
+    slot_end: datetime
+    therapist_id: str
+    therapist_name: str
+    room_id: str
+    room_name: str
+    score: float
+    rank: int
+    reasons: list[str]
+
+
 class SessionRecordCreate(BaseModel):
     session_id: str
     observations: Optional[str] = None
@@ -394,3 +414,39 @@ def submit_patient_feedback(
 
     db.commit()
     return {"message": "Feedback submitted successfully", "session_id": session_id}
+
+
+@router.post("/recommend-slots", response_model=list[RankedSlotOut])
+def recommend_ranked_slots(
+    body: RecommendSlotsRequest,
+    db: Session = Depends(get_db),
+    _: User = StaffOnly,
+):
+    """Recommend the top-N optimal, ranked slots for a therapy based on Ayurvedic circadian timing,
+    therapist workload balance, and specialized room facilities."""
+    engine = SchedulingEngine(
+        db=db,
+        clinic_open=settings.clinic_open,
+        clinic_close=settings.clinic_close,
+    )
+    ranked = engine.recommend_slots(
+        therapy_id=body.therapy_id,
+        patient_id=body.patient_id,
+        duration_minutes=body.duration_minutes,
+        preferred_start_date=body.preferred_start_date,
+        top_n=body.top_n,
+    )
+    return [
+        RankedSlotOut(
+            slot_start=r.slot_start,
+            slot_end=r.slot_end,
+            therapist_id=r.therapist_id,
+            therapist_name=r.therapist_name,
+            room_id=r.room_id,
+            room_name=r.room_name,
+            score=r.score,
+            rank=r.rank,
+            reasons=r.reasons,
+        )
+        for r in ranked
+    ]

@@ -369,3 +369,157 @@ class SchedulingEngine:
             session.status = SessionStatus.rescheduled
 
         return new_sessions
+
+    def recommend_slots(
+        self,
+        therapy_id: str,
+        patient_id: str,
+        duration_minutes: int = 60,
+        preferred_start_date: date | None = None,
+        top_n: int = 3,
+    ) -> list[RankedSlotRecommendation]:
+        """
+        Evaluate candidate slots over the next 14 days and rank the top slots
+        using multi-factor heuristic scoring (circadian timing, therapist workload, room fit).
+        """
+        from app.models import Therapy
+
+        start_d = preferred_start_date or date.today()
+        therapy = self.db.query(Therapy).filter(Therapy.id == therapy_id).first()
+        required_facilities = therapy.required_facilities if therapy else None
+
+        therapists = self._load_therapists(None)
+        rooms = self._load_rooms(None)
+
+        active_statuses = [
+            SessionStatus.scheduled,
+            SessionStatus.confirmed,
+            SessionStatus.checked_in,
+            SessionStatus.in_progress,
+        ]
+        booked_sessions = (
+            self.db.query(TherapySession)
+            .filter(TherapySession.status.in_(active_statuses))
+            .all()
+        )
+
+        all_items = self.db.query(TreatmentPlanItem).all()
+        plan_items_map: dict[str, str] = {}
+        for item in all_items:
+            plan = item.plan
+            if plan and plan.consultation and plan.consultation.patient_id:
+                plan_items_map[item.id] = plan.consultation.patient_id
+
+        # Generate candidate slots across next 14 days
+        candidates = _generate_candidate_slots(
+            start_d,
+            duration_minutes,
+            self.clinic_open,
+            self.clinic_close,
+        )
+
+        scored_slots: list[tuple[float, list[str], datetime, datetime, Staff, Room]] = []
+
+        # Count existing sessions per therapist for workload balancing
+        therapist_load: dict[str, int] = {}
+        for s in booked_sessions:
+            therapist_load[s.therapist_id] = therapist_load.get(s.therapist_id, 0) + 1
+
+        for slot_date, start_t, end_t in candidates[:120]:  # limit to evaluate first 120 window slots
+            slot_start_dt = datetime.combine(slot_date, start_t)
+            slot_end_dt = datetime.combine(slot_date, end_t)
+
+            if slot_start_dt < datetime.now():
+                continue
+
+            for therapist in therapists:
+                if therapy and not _therapist_qualified(therapist, therapy.id):
+                    continue
+                if not _therapist_working(therapist, slot_date, start_t, end_t):
+                    continue
+                if not _therapist_free(therapist, slot_start_dt, slot_end_dt, booked_sessions):
+                    continue
+
+                for room in rooms:
+                    if not _room_has_facilities(room, required_facilities):
+                        continue
+                    if not _room_free(room, slot_start_dt, slot_end_dt, booked_sessions):
+                        continue
+                    if not _patient_free(patient_id, slot_start_dt, slot_end_dt, booked_sessions, plan_items_map):
+                        continue
+
+                    # Calculate scoring factors
+                    score = 0.0
+                    reasons = []
+
+                    # 1. Ayurvedic Circadian Score: Morning (08:00–11:30) is optimal for Panchakarma detox
+                    if start_t < time(11, 30):
+                        score += 40.0
+                        reasons.append("Optimal Ayurvedic morning timing (Kapha/Pitta detox window)")
+                    elif start_t < time(14, 0):
+                        score += 25.0
+                        reasons.append("Midday timing suitable for mild treatments")
+                    else:
+                        score += 15.0
+                        reasons.append("Afternoon slot")
+
+                    # 2. Therapist Workload Balance Score
+                    load = therapist_load.get(therapist.id, 0)
+                    if load == 0:
+                        score += 30.0
+                        reasons.append(f"Therapist {therapist.first_name} has zero bookings on this day")
+                    elif load < 3:
+                        score += 20.0
+                        reasons.append(f"Therapist {therapist.first_name} has light workload ({load} sessions)")
+                    else:
+                        score += 10.0
+
+                    # 3. Dedicated Facility Fit Score
+                    if required_facilities and required_facilities in (room.facilities or ""):
+                        score += 20.0
+                        reasons.append(f"Room {room.name} has specialized equipment for {therapy.name if therapy else 'therapy'}")
+                    else:
+                        score += 10.0
+
+                    scored_slots.append((score, reasons, slot_start_dt, slot_end_dt, therapist, room))
+
+        # Sort by score descending
+        scored_slots.sort(key=lambda x: x[0], reverse=True)
+
+        recommendations = []
+        seen_times = set()
+        for idx, (score, reasons, s_start, s_end, th, rm) in enumerate(scored_slots):
+            key = (s_start, th.id)
+            if key in seen_times:
+                continue
+            seen_times.add(key)
+            recommendations.append(
+                RankedSlotRecommendation(
+                    slot_start=s_start,
+                    slot_end=s_end,
+                    therapist_id=th.id,
+                    therapist_name=f"{th.first_name} {th.last_name}",
+                    room_id=rm.id,
+                    room_name=rm.name,
+                    score=score,
+                    rank=len(recommendations) + 1,
+                    reasons=reasons,
+                )
+            )
+            if len(recommendations) >= top_n:
+                break
+
+        return recommendations
+
+
+@dataclass
+class RankedSlotRecommendation:
+    slot_start: datetime
+    slot_end: datetime
+    therapist_id: str
+    therapist_name: str
+    room_id: str
+    room_name: str
+    score: float
+    rank: int
+    reasons: list[str] = field(default_factory=list)

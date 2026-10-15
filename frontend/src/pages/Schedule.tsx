@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '@/lib/api'
-import { Calendar, Clock, CheckCircle2, UserCheck, X } from 'lucide-react'
+import { Calendar, Clock, CheckCircle2, UserCheck, X, Sparkles } from 'lucide-react'
 
 interface SessionItem {
   id: string
@@ -14,10 +14,31 @@ interface SessionItem {
   status: string
 }
 
+interface RankedSlot {
+  slot_start: string
+  slot_end: string
+  therapist_id: string
+  therapist_name: string
+  room_id: string
+  room_name: string
+  score: number
+  rank: number
+  reasons: string[]
+}
+
 export default function Schedule() {
   const queryClient = useQueryClient()
   const [completeModalOpen, setCompleteModalOpen] = useState(false)
+  const [recommendModalOpen, setRecommendModalOpen] = useState(false)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  
+  // Slot recommendation form
+  const [recPatientId, setRecPatientId] = useState('')
+  const [recTherapyId, setRecTherapyId] = useState('')
+  const [recDate, setRecDate] = useState(new Date().toISOString().split('T')[0])
+  const [rankedResults, setRankedResults] = useState<RankedSlot[]>([])
+  const [recLoading, setRecLoading] = useState(false)
+
   const [recordForm, setRecordForm] = useState({
     observations: '',
     patient_feedback: '',
@@ -98,6 +119,36 @@ export default function Schedule() {
     }
   }
 
+  // Fetch patients & therapies for recommendation picker
+  const { data: patients = [] } = useQuery({
+    queryKey: ['patients-list'],
+    queryFn: async () => (await api.get('/patients/')).data,
+  })
+
+  const { data: therapies = [] } = useQuery({
+    queryKey: ['therapies-list'],
+    queryFn: async () => (await api.get('/therapies/')).data,
+  })
+
+  async function handleRunRecommendations(e: React.FormEvent) {
+    e.preventDefault()
+    if (!recPatientId || !recTherapyId) return
+    setRecLoading(true)
+    try {
+      const res = await api.post('/scheduling/recommend-slots', {
+        patient_id: recPatientId,
+        therapy_id: recTherapyId,
+        preferred_start_date: recDate,
+        top_n: 3,
+      })
+      setRankedResults(res.data)
+    } catch (err: any) {
+      alert(err.response?.data?.detail || 'Failed to fetch slot recommendations')
+    } finally {
+      setRecLoading(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -105,6 +156,17 @@ export default function Schedule() {
           <h1 className="text-2xl font-bold text-gray-800">Therapy Schedule</h1>
           <p className="text-sm text-gray-500">Multi-session management with conflict detection and room assignment</p>
         </div>
+        <button
+          onClick={() => {
+            if (patients.length > 0) setRecPatientId(patients[0].id)
+            if (therapies.length > 0) setRecTherapyId(therapies[0].id)
+            setRecommendModalOpen(true)
+          }}
+          className="flex items-center gap-2 bg-amber-600 hover:bg-amber-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold shadow-sm transition"
+        >
+          <Sparkles size={16} />
+          Recommend Best Slots
+        </button>
       </div>
 
       {/* Sessions Table */}
@@ -276,6 +338,152 @@ export default function Schedule() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Ranked Slot Recommendation Assistant Modal */}
+      {recommendModalOpen && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => {
+                setRecommendModalOpen(false)
+                setRankedResults([])
+              }}
+              className="absolute right-5 top-5 text-gray-400 hover:text-gray-600"
+            >
+              <X size={20} />
+            </button>
+            <div className="flex items-center gap-2 text-amber-700 mb-1">
+              <Sparkles size={20} />
+              <h2 className="text-xl font-bold text-gray-800">Smart Slot Recommendation Assistant</h2>
+            </div>
+            <p className="text-xs text-gray-500 mb-4">
+              AI & rule-based ranking: matches optimal Ayurvedic circadian timing, therapist workload, and specialized equipment.
+            </p>
+
+            <form onSubmit={handleRunRecommendations} className="space-y-3 bg-gray-50 p-4 rounded-2xl border border-gray-100">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Select Patient</label>
+                  <select
+                    required
+                    value={recPatientId}
+                    onChange={(e) => setRecPatientId(e.target.value)}
+                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  >
+                    {patients.map((p: any) => (
+                      <option key={p.id} value={p.id}>
+                        {p.first_name} {p.last_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Select Therapy</label>
+                  <select
+                    required
+                    value={recTherapyId}
+                    onChange={(e) => setRecTherapyId(e.target.value)}
+                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  >
+                    {therapies.map((t: any) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} ({t.default_duration_minutes}m)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-end justify-between gap-3 pt-1">
+                <div className="flex-1">
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Preferred Start Date</label>
+                  <input
+                    type="date"
+                    required
+                    value={recDate}
+                    onChange={(e) => setRecDate(e.target.value)}
+                    className="w-full bg-white border border-gray-300 rounded-lg px-3 py-1.5 text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={recLoading}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition disabled:opacity-60 flex items-center gap-1.5"
+                >
+                  <Sparkles size={14} />
+                  {recLoading ? 'Evaluating...' : 'Find Ranked Slots'}
+                </button>
+              </div>
+            </form>
+
+            {/* Results */}
+            {rankedResults.length > 0 && (
+              <div className="mt-5 space-y-3">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">
+                  Top Recommended Slots (Ranked by Clinical & Resource Fit)
+                </h3>
+                {rankedResults.map((rec) => {
+                  const isTop = rec.rank === 1
+                  return (
+                    <div
+                      key={rec.rank}
+                      className={`p-4 rounded-2xl border transition-all ${
+                        isTop
+                          ? 'bg-amber-50/50 border-amber-300 shadow-sm ring-1 ring-amber-200'
+                          : 'bg-white border-gray-200'
+                      }`}
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                              isTop
+                                ? 'bg-amber-600 text-white'
+                                : 'bg-gray-100 text-gray-700'
+                            }`}
+                          >
+                            #{rec.rank}
+                          </span>
+                          <div>
+                            <span className="font-bold text-gray-800 text-sm">
+                              {new Date(rec.slot_start).toLocaleDateString(undefined, {
+                                weekday: 'short',
+                                month: 'short',
+                                day: 'numeric',
+                              })}
+                              , {new Date(rec.slot_start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} -{' '}
+                              {new Date(rec.slot_end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                        </div>
+                        <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800">
+                          Fit Score: {rec.score}
+                        </span>
+                      </div>
+
+                      <div className="text-xs text-gray-600 flex gap-4 my-2">
+                        <span>Therapist: <strong className="text-gray-800">{rec.therapist_name}</strong></span>
+                        <span>Room: <strong className="text-gray-800">{rec.room_name}</strong></span>
+                      </div>
+
+                      <div className="space-y-1 pt-2 border-t border-gray-100/80">
+                        <span className="text-[11px] font-semibold text-gray-400 block">Evaluation Rationale:</span>
+                        {rec.reasons.map((r, i) => (
+                          <div key={i} className="flex items-center gap-1.5 text-xs text-gray-600">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                            <span>{r}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}

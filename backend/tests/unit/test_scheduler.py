@@ -183,3 +183,45 @@ class TestPatientFree:
             booked,
             plan_items_map,
         )
+
+
+class TestSlotRecommendations:
+    def test_slot_recommendation_ranking(self):
+        """Verify recommend_slots ranks morning Ayurvedic timing highest and includes reasons."""
+        mock_db = MagicMock()
+
+        # Mock therapy
+        mock_th = MagicMock(spec=Therapy, id="th1", name="Abhyanga", required_facilities=None)
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_th
+
+        # Mock therapist working every day
+        mock_therapist = MagicMock(spec=Staff, id="st1", first_name="Anitha", last_name="K")
+        mock_avail = MagicMock(spec=StaffAvailability, weekday=date.today().weekday(), start_time=time(8, 0), end_time=time(18, 0), leave_date=None)
+        mock_therapist.availabilities = [mock_avail]
+        mock_tt = MagicMock(spec=TherapistTherapy, therapy_id="th1")
+        mock_therapist.authorized_therapies = [mock_tt]
+
+        # Mock room
+        mock_room = MagicMock(spec=Room, id="r1", name="Dhanvantari", facilities="table,oil")
+
+        engine = SchedulingEngine(db=mock_db, clinic_open=time(8, 0), clinic_close=time(18, 0))
+        engine._load_therapists = MagicMock(return_value=[mock_therapist])
+        engine._load_rooms = MagicMock(return_value=[mock_room])
+
+        mock_db.query.return_value.filter.return_value.all.return_value = []
+        mock_db.query.return_value.all.return_value = []
+
+        recs = engine.recommend_slots(
+            therapy_id="th1",
+            patient_id="p1",
+            duration_minutes=60,
+            preferred_start_date=date.today(),
+            top_n=3,
+        )
+
+        assert len(recs) <= 3
+        if recs:
+            assert recs[0].rank == 1
+            assert recs[0].score >= recs[-1].score
+            assert len(recs[0].reasons) > 0
+            assert "Kapha/Pitta detox window" in recs[0].reasons[0] or "morning timing" in recs[0].reasons[0]
