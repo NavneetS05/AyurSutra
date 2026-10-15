@@ -132,16 +132,27 @@ export default function PatientPortal() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Plan Details */}
           <div className="lg:col-span-2 bg-white rounded-2xl p-6 shadow-sm border border-gray-100 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-gray-100">
               <div>
                 <h2 className="text-lg font-bold text-gray-800">{active_plan.title}</h2>
                 <p className="text-xs text-gray-500">
                   Target: {active_plan.objectives || 'Holistic Panchakarma Detoxification'}
                 </p>
               </div>
-              <span className="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
-                Active Protocol
-              </span>
+              <div className="flex items-center gap-2">
+                <a
+                  href={`${api.defaults.baseURL}/consultations/treatment-plans/${active_plan.id}/summary/pdf`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-lg text-xs font-semibold shadow-xs transition"
+                >
+                  <Download size={13} />
+                  Course Summary PDF
+                </a>
+                <span className="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
+                  Active Protocol
+                </span>
+              </div>
             </div>
 
             {/* Prescribed Items */}

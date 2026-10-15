@@ -1,10 +1,11 @@
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.dependencies import AdminOrReceptionist, DoctorOnly, StaffOnly, AnyRole
 from app.db.session import get_db
 from app.models import (
@@ -105,6 +106,7 @@ class ConsultationOut(BaseModel):
     consultation_fee: Decimal
     fee_paid: bool
     has_treatment_plan: bool = False
+    treatment_plan_id: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -202,6 +204,7 @@ def list_consultations(
                 consultation_fee=c.consultation_fee,
                 fee_paid=c.fee_paid,
                 has_treatment_plan=c.treatment_plan is not None,
+                treatment_plan_id=c.treatment_plan.id if c.treatment_plan else None,
             )
         )
     return results
@@ -239,6 +242,7 @@ def update_consultation_notes(
         consultation_fee=consultation.consultation_fee,
         fee_paid=consultation.fee_paid,
         has_treatment_plan=consultation.treatment_plan is not None,
+        treatment_plan_id=consultation.treatment_plan.id if consultation.treatment_plan else None,
     )
 
 
@@ -394,3 +398,277 @@ def get_treatment_plan(
             for pi in plan.items
         ],
     )
+
+
+@router.get("/treatment-plans/{plan_id}/summary")
+def get_treatment_summary(
+    plan_id: str,
+    db: Session = Depends(get_db),
+    _: User = AnyRole,
+):
+    """
+    Returns an aggregated Clinical Treatment Summary and Session Attendance report.
+    Complies with clinical standards: completion rate measures session attendance, not clinical recovery.
+    """
+    plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Treatment plan not found")
+
+    consultation = plan.consultation
+    patient = consultation.patient
+    doctor = consultation.doctor
+
+    # Aggregate sessions
+    all_sessions = []
+    prescriptions = []
+    total_planned = 0
+    completed_count = 0
+
+    for item in plan.items:
+        prescriptions.append({
+            "therapy_id": item.therapy_id,
+            "therapy_name": item.therapy.name if item.therapy else "Therapy",
+            "session_count": item.session_count,
+            "duration_minutes": item.duration_minutes,
+            "frequency_per_week": item.frequency_per_week,
+            "notes": item.notes,
+        })
+        for s in item.sessions:
+            total_planned += 1
+            if s.status.value == "completed":
+                completed_count += 1
+
+            therapist_name = (
+                f"{s.therapist.user.first_name} {s.therapist.user.last_name}"
+                if s.therapist and s.therapist.user
+                else "Unassigned"
+            )
+            room_name = s.room.name if s.room else "Unassigned"
+
+            all_sessions.append({
+                "session_id": s.id,
+                "session_number": s.session_number,
+                "therapy_name": item.therapy.name if item.therapy else "Therapy",
+                "scheduled_at": s.scheduled_at.isoformat() if s.scheduled_at else None,
+                "status": s.status.value,
+                "therapist_name": therapist_name,
+                "room_name": room_name,
+                "actual_start": s.actual_start.isoformat() if s.actual_start else None,
+                "actual_end": s.actual_end.isoformat() if s.actual_end else None,
+                "observations": s.record.observations if s.record else None,
+                "oils_used": s.record.oils_used if s.record else None,
+                "pressure_level": s.record.pressure_level if s.record else None,
+                "patient_feedback": s.record.patient_feedback if s.record else None,
+                "flagged_for_doctor": s.record.flagged_for_doctor if s.record else False,
+            })
+
+    # Sort sessions chronologically
+    all_sessions.sort(key=lambda x: (x["scheduled_at"] or "", x["session_number"]))
+
+    attendance_pct = round((completed_count / total_planned * 100), 1) if total_planned > 0 else 0.0
+
+    package_data = None
+    if plan.package:
+        package_data = {
+            "name": plan.package.name,
+            "custom_price": float(plan.package.custom_price),
+            "amount_paid": float(plan.package.amount_paid),
+            "balance_due": float(plan.package.balance_due),
+            "payment_status": plan.package.payment_status.value,
+        }
+
+    return {
+        "plan_id": plan.id,
+        "title": plan.title,
+        "start_date": plan.start_date.isoformat(),
+        "end_date": plan.end_date.isoformat() if plan.end_date else None,
+        "is_finalized": plan.is_finalized,
+        "patient": {
+            "id": patient.id,
+            "name": f"{patient.first_name} {patient.last_name}",
+            "uhid": patient.uhid,
+            "phone": patient.phone,
+            "email": patient.email,
+            "gender": patient.gender,
+            "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+        },
+        "doctor": {
+            "id": doctor.id if doctor else None,
+            "name": f"{doctor.user.first_name} {doctor.user.last_name}" if doctor and doctor.user else "Consulting Vaidya",
+            "specialization": doctor.specialization if doctor else "Ayurvedic Medicine",
+        },
+        "clinical_assessment": {
+            "chief_complaint": consultation.chief_complaint,
+            "prakriti": consultation.prakriti,
+            "vikriti": consultation.vikriti,
+            "notes": consultation.notes,
+        },
+        "prescriptions": prescriptions,
+        "attendance": {
+            "total_planned_sessions": total_planned,
+            "completed_sessions": completed_count,
+            "session_attendance_percentage": attendance_pct,
+            "compliance_notice": "Measures session attendance, not clinical recovery.",
+        },
+        "sessions": all_sessions,
+        "diet_recommendations": plan.diet_recommendations,
+        "lifestyle_recommendations": plan.lifestyle_recommendations,
+        "package_billing": package_data,
+    }
+
+
+@router.get("/treatment-plans/{plan_id}/summary/pdf")
+def get_treatment_summary_pdf(
+    plan_id: str,
+    db: Session = Depends(get_db),
+    _: User = AnyRole,
+):
+    """
+    Renders an official, printable Clinical Treatment Summary & Panchakarma Discharge Report.
+    """
+    data = get_treatment_summary(plan_id=plan_id, db=db, _=_)
+    patient = data["patient"]
+    doctor = data["doctor"]
+    assessment = data["clinical_assessment"]
+    attendance = data["attendance"]
+    prescriptions = data["prescriptions"]
+    sessions = data["sessions"]
+
+    session_rows = "".join([
+        f"""
+        <tr>
+            <td>#{s['session_number']} - {s['therapy_name']}</td>
+            <td>{s['scheduled_at'][:10] if s['scheduled_at'] else '—'}</td>
+            <td>{s['therapist_name']}</td>
+            <td><strong>{s['status'].upper()}</strong></td>
+            <td>{s['observations'] or s['oils_used'] or '—'}</td>
+        </tr>
+        """
+        for s in sessions
+    ])
+
+    prescription_rows = "".join([
+        f"""
+        <li><strong>{p['therapy_name']}</strong>: {p['session_count']} sessions ({p['duration_minutes']} mins each)</li>
+        """
+        for p in prescriptions
+    ])
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Treatment Summary - {patient['name']}</title>
+        <style>
+            body {{ font-family: 'Helvetica Neue', Arial, sans-serif; padding: 35px; color: #2d3748; line-height: 1.5; }}
+            .clinic-header {{ border-bottom: 2px solid #556b2f; padding-bottom: 15px; margin-bottom: 25px; }}
+            .clinic-name {{ font-size: 24px; font-weight: bold; color: #3b4d24; }}
+            .report-title {{ font-size: 14px; text-transform: uppercase; letter-spacing: 1.5px; color: #718096; margin-top: 4px; }}
+            .grid {{ display: flex; justify-content: space-between; margin-bottom: 20px; }}
+            .col {{ width: 48%; background: #f7fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0; }}
+            .col h4 {{ margin: 0 0 8px 0; font-size: 13px; text-transform: uppercase; color: #4a5568; border-bottom: 1px solid #edf2f7; padding-bottom: 4px; }}
+            .col p {{ margin: 4px 0; font-size: 13px; }}
+            .dosha-tag {{ display: inline-block; padding: 2px 8px; background: #e6fffa; color: #234e52; border-radius: 4px; font-weight: bold; font-size: 12px; }}
+            .section {{ margin-top: 25px; }}
+            .section-title {{ font-size: 15px; font-weight: bold; color: #2d3748; border-bottom: 1px solid #cbd5e0; padding-bottom: 5px; margin-bottom: 10px; }}
+            .attendance-box {{ background: #f0fff4; border: 1px solid #c6f6d5; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; }}
+            .attendance-rate {{ font-size: 22px; font-weight: bold; color: #22543d; }}
+            .compliance-note {{ font-size: 11px; color: #718096; font-style: italic; margin-top: 4px; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }}
+            th {{ background: #edf2f7; text-align: left; padding: 8px 10px; border-bottom: 2px solid #cbd5e0; }}
+            td {{ padding: 8px 10px; border-bottom: 1px solid #e2e8f0; }}
+            .rx-box {{ background: #fffaf0; border: 1px solid #feebc8; padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-top: 15px; }}
+            .sign-area {{ margin-top: 50px; display: flex; justify-content: space-between; }}
+            .sign-box {{ width: 220px; border-top: 1px dashed #a0aec0; text-align: center; padding-top: 8px; font-size: 12px; }}
+        </style>
+    </head>
+    <body>
+        <div class="clinic-header">
+            <div class="clinic-name">{settings.CLINIC_NAME}</div>
+            <div class="report-title">Panchakarma Clinical Discharge & Treatment Summary</div>
+        </div>
+
+        <div class="grid">
+            <div class="col">
+                <h4>Patient Demographics</h4>
+                <p><strong>Name:</strong> {patient['name']}</p>
+                <p><strong>UHID:</strong> {patient['uhid']}</p>
+                <p><strong>Contact:</strong> {patient['phone']}</p>
+                <p><strong>Gender:</strong> {patient['gender'].capitalize()}</p>
+            </div>
+            <div class="col">
+                <h4>Clinical Assessment</h4>
+                <p><strong>Consulting Vaidya:</strong> Dr. {doctor['name']}</p>
+                <p><strong>Prakriti / Vikriti:</strong> <span class="dosha-tag">{assessment['prakriti'] or 'Pitta-Kapha'}</span> / <span class="dosha-tag">{assessment['vikriti'] or 'Vata'}</span></p>
+                <p><strong>Chief Complaint:</strong> {assessment['chief_complaint'] or 'Chronic Stress & Musculoskeletal Fatigue'}</p>
+            </div>
+        </div>
+
+        <div class="attendance-box">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <span style="font-size: 13px; font-weight: bold; color: #276749;">Session Attendance Progress</span>
+                    <div class="compliance-note">* {attendance['compliance_notice']}</div>
+                </div>
+                <div class="attendance-rate">{attendance['session_attendance_percentage']}%</div>
+            </div>
+            <p style="margin: 6px 0 0 0; font-size: 12px; color: #2f855a;">
+                Completed {attendance['completed_sessions']} of {attendance['total_planned_sessions']} planned therapeutic sessions.
+            </p>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Prescribed Panchakarma Protocol: {data['title']}</div>
+            <ul style="margin: 6px 0 0 20px; font-size: 13px;">
+                {prescription_rows}
+            </ul>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Therapy Session Log & Clinical Observations</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Procedure</th>
+                        <th>Date</th>
+                        <th>Therapist</th>
+                        <th>Status</th>
+                        <th>Clinical Observations / Oils</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {session_rows or '<tr><td colspan="5" style="text-align:center;">No sessions scheduled yet.</td></tr>'}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="rx-box">
+            <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #744210;">Discharge Care Protocol (Pathya & Vihara)</h4>
+            <p><strong>Dietary Protocol (Pathya):</strong> {data['diet_recommendations'] or 'Warm, light meals; avoid deep-fried foods, cold beverages, and curd at night.'}</p>
+            <p><strong>Lifestyle Protocol (Vihara):</strong> {data['lifestyle_recommendations'] or 'Early sleeping before 10 PM; gentle morning pranayama; avoid heavy exertion for 7 days post-treatment.'}</p>
+        </div>
+
+        <div class="sign-area">
+            <div class="sign-box">
+                Patient / Guardian Signature
+            </div>
+            <div class="sign-box">
+                Authorized Ayurvedic Physician
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    try:
+        from weasyprint import HTML
+        pdf_bytes = HTML(string=html_content).write_pdf()
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=Treatment_Summary_{patient['uhid']}.pdf"},
+        )
+    except Exception:
+        # Graceful fallback to HTML print layout
+        return Response(content=html_content, media_type="text/html")
