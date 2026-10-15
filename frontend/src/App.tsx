@@ -9,6 +9,7 @@ import Therapies from '@/pages/Therapies'
 import Schedule from '@/pages/Schedule'
 import Consultations from '@/pages/Consultations'
 import PatientPortal from '@/pages/PatientPortal'
+import Analytics from '@/pages/Analytics'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000 } },
@@ -28,6 +29,7 @@ export default function App() {
               <Route path="consultations" element={<Consultations />} />
               <Route path="schedule" element={<Schedule />} />
               <Route path="therapies" element={<Therapies />} />
+              <Route path="analytics" element={<Analytics />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

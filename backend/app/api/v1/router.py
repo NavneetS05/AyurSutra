@@ -8,6 +8,7 @@ from app.api.v1.endpoints import (
     scheduling,
     staff,
     therapies,
+    analytics,
 )
 
 api_router = APIRouter()
@@ -19,3 +20,4 @@ api_router.include_router(staff.router)
 api_router.include_router(consultations.router)
 api_router.include_router(billing.router)
 api_router.include_router(scheduling.router)
+api_router.include_router(analytics.router)

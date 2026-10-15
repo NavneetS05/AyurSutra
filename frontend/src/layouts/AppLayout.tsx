@@ -1,6 +1,6 @@
 import { Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/lib/auth'
-import { LogOut, Users, Calendar, LayoutDashboard, Leaf, Stethoscope, Sparkles } from 'lucide-react'
+import { LogOut, Users, Calendar, LayoutDashboard, Leaf, Stethoscope, Sparkles, BarChart3 } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
 
 const navItems = [
@@ -10,6 +10,7 @@ const navItems = [
   { to: '/consultations', label: 'Consultations', icon: Stethoscope, roles: ['admin', 'receptionist', 'doctor'] },
   { to: '/schedule', label: 'Schedule', icon: Calendar, roles: ['admin', 'receptionist', 'doctor', 'therapist'] },
   { to: '/therapies', label: 'Therapies', icon: Leaf, roles: ['admin', 'doctor'] },
+  { to: '/analytics', label: 'Analytics', icon: BarChart3, roles: ['admin', 'doctor'] },
 ]
 
 export default function AppLayout() {
