@@ -263,7 +263,7 @@ def list_sessions(
 def check_in(
     session_id: str,
     db: Session = Depends(get_db),
-    _: User = AdminOrReceptionist,
+    current_user: User = AdminOrReceptionist,
 ):
     session = db.query(TherapySession).filter(TherapySession.id == session_id).first()
     if not session:
@@ -272,6 +272,17 @@ def check_in(
         raise HTTPException(status_code=400, detail=f"Cannot check in session with status: {session.status}")
     session.status = SessionStatus.checked_in
     session.actual_start = datetime.utcnow()
+
+    from app.models import AuditLog
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action="SESSION_CHECK_IN",
+            entity_type="TherapySession",
+            entity_id=session.id,
+            detail=f"Patient checked in for Session #{session.session_number}",
+        )
+    )
     db.commit()
     return {"message": "Checked in", "session_id": session_id}
 
@@ -305,6 +316,17 @@ def complete_session(
         flagged_for_doctor=body.flagged_for_doctor,
     )
     db.add(record)
+
+    from app.models import AuditLog
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action="SESSION_COMPLETED",
+            entity_type="TherapySession",
+            entity_id=session.id,
+            detail=f"Session #{session.session_number} completed. Flagged for doctor: {body.flagged_for_doctor}",
+        )
+    )
     db.commit()
     return {"message": "Session completed", "session_id": session_id}
 

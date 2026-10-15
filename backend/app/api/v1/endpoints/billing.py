@@ -91,7 +91,7 @@ class PaymentOut(BaseModel):
 def create_package(
     body: PackageCreate,
     db: Session = Depends(get_db),
-    _: User = AdminOrReceptionist,
+    current_user: User = AdminOrReceptionist,
 ):
     plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == body.treatment_plan_id).first()
     if not plan:
@@ -112,6 +112,18 @@ def create_package(
         valid_until=body.valid_until,
     )
     db.add(package)
+    db.flush()
+    
+    from app.models import AuditLog
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action="CREATE_PATIENT_PACKAGE",
+            entity_type="PatientPackage",
+            entity_id=package.id,
+            detail=f"Created custom package '{package.name}' for INR {package.custom_price}",
+        )
+    )
     db.commit()
     db.refresh(package)
 
@@ -162,7 +174,7 @@ def get_package(
 def record_payment(
     body: PaymentCreate,
     db: Session = Depends(get_db),
-    _: User = AdminOrReceptionist,
+    current_user: User = AdminOrReceptionist,
 ):
     patient = db.query(Patient).filter(Patient.id == body.patient_id).first()
     if not patient:
@@ -206,6 +218,17 @@ def record_payment(
         c = db.query(Consultation).filter(Consultation.id == body.consultation_id).first()
         if c:
             c.fee_paid = True
+
+    from app.models import AuditLog
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action="RECORD_PAYMENT",
+            entity_type="Payment",
+            entity_id=payment.id,
+            detail=f"Collected payment of INR {payment.amount} via {payment.method.value}. Receipt: {receipt.receipt_number}",
+        )
+    )
 
     db.commit()
     db.refresh(payment)

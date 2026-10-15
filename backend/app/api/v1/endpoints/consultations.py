@@ -313,7 +313,7 @@ def create_treatment_plan(
 def finalize_treatment_plan(
     plan_id: str,
     db: Session = Depends(get_db),
-    _: User = DoctorOnly,
+    current_user: User = DoctorOnly,
 ):
     plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == plan_id).first()
     if not plan:
@@ -322,6 +322,17 @@ def finalize_treatment_plan(
         raise HTTPException(status_code=400, detail="Cannot finalize plan without therapy items")
 
     plan.is_finalized = True
+    
+    from app.models import AuditLog
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            action="FINALIZE_TREATMENT_PLAN",
+            entity_type="TreatmentPlan",
+            entity_id=plan.id,
+            detail=f"Finalized treatment plan '{plan.title}' with {len(plan.items)} therapy items",
+        )
+    )
     db.commit()
     db.refresh(plan)
 

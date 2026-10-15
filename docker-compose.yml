@@ -1,0 +1,63 @@
+version: "3.8"
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database Service
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: ayursutra-db
+    restart: always
+    environment:
+      POSTGRES_DB: ayursutra
+      POSTGRES_USER: ayursutra
+      POSTGRES_PASSWORD: ayursutra_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ayursutra -d ayursutra"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # FastAPI Application Backend
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ayursutra-backend
+    restart: always
+    environment:
+      DATABASE_URL: postgresql+psycopg://ayursutra:ayursutra_pass@db:5432/ayursutra
+      SECRET_KEY: ${SECRET_KEY:-ayursutra-production-secret-key-super-secure-panchakarma}
+      CLINIC_NAME: "AyurSutra Panchakarma Centre"
+      CLINIC_OPEN_TIME: "08:00"
+      CLINIC_CLOSE_TIME: "20:00"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend/generated_pdfs:/app/generated_pdfs
+
+  # ---------------------------------------------------------------------------
+  # Vite + React Frontend (Nginx Proxy)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ayursutra-frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
