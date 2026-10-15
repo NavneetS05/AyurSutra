@@ -1,6 +1,6 @@
 import { Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/lib/auth'
-import { LogOut, Users, Calendar, LayoutDashboard, Leaf, Stethoscope, Sparkles, BarChart3, ShieldCheck } from 'lucide-react'
+import { LogOut, Users, Calendar, LayoutDashboard, Leaf, Stethoscope, Sparkles, BarChart3, ShieldCheck, DoorClosed, UserCheck } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
 
 const navItems = [
@@ -10,6 +10,8 @@ const navItems = [
   { to: '/consultations', label: 'Consultations', icon: Stethoscope, roles: ['admin', 'receptionist', 'doctor'] },
   { to: '/schedule', label: 'Schedule', icon: Calendar, roles: ['admin', 'receptionist', 'doctor', 'therapist'] },
   { to: '/therapies', label: 'Therapies', icon: Leaf, roles: ['admin', 'doctor'] },
+  { to: '/rooms', label: 'Rooms & Suites', icon: DoorClosed, roles: ['admin', 'doctor', 'receptionist'] },
+  { to: '/staff', label: 'Staff & Vaidyas', icon: UserCheck, roles: ['admin', 'doctor'] },
   { to: '/analytics', label: 'Analytics', icon: BarChart3, roles: ['admin', 'doctor'] },
   { to: '/audit-logs', label: 'Audit Logs', icon: ShieldCheck, roles: ['admin'] },
 ]

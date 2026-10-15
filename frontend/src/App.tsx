@@ -11,6 +11,8 @@ import Consultations from '@/pages/Consultations'
 import PatientPortal from '@/pages/PatientPortal'
 import Analytics from '@/pages/Analytics'
 import AuditLogs from '@/pages/AuditLogs'
+import Rooms from '@/pages/Rooms'
+import Staff from '@/pages/Staff'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000 } },
@@ -30,6 +32,8 @@ export default function App() {
               <Route path="consultations" element={<Consultations />} />
               <Route path="schedule" element={<Schedule />} />
               <Route path="therapies" element={<Therapies />} />
+              <Route path="rooms" element={<Rooms />} />
+              <Route path="staff" element={<Staff />} />
               <Route path="analytics" element={<Analytics />} />
               <Route path="audit-logs" element={<AuditLogs />} />
             </Route>
