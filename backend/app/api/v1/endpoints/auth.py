@@ -39,21 +39,46 @@ class RefreshRequest(BaseModel):
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == body.email).first()
+    client_ip = request.client.host if request.client else "127.0.0.1"
+
     if not user or not verify_password(body.password, user.hashed_password):
+        # Audit failed login attempt
+        fail_log = AuditLog(
+            user_id=user.id if user else None,
+            action="LOGIN_FAILED",
+            entity_type="User",
+            entity_id=user.id if user else "UNKNOWN",
+            ip_address=client_ip,
+            detail=f"Failed login attempt for email '{body.email}'",
+        )
+        db.add(fail_log)
+        db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
     if not user.is_active:
+        fail_log = AuditLog(
+            user_id=user.id,
+            action="LOGIN_FAILED",
+            entity_type="User",
+            entity_id=user.id,
+            ip_address=client_ip,
+            detail=f"Deactivated account '{user.email}' attempted to log in",
+        )
+        db.add(fail_log)
+        db.commit()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account deactivated")
 
     access_token = create_access_token(subject=user.id, role=user.role.value)
     refresh_token = create_refresh_token(subject=user.id)
 
-    # Audit
+    # Audit successful login
     log = AuditLog(
         user_id=user.id,
         action="LOGIN",
         entity_type="User",
         entity_id=user.id,
-        ip_address=request.client.host if request.client else None,
+        ip_address=client_ip,
+        detail=f"User '{user.email}' ({user.role.value}) logged in successfully",
     )
     db.add(log)
     db.commit()

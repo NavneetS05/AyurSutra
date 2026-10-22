@@ -13,6 +13,9 @@ router = APIRouter(prefix="/therapies", tags=["Therapies"])
 
 class TherapyCreate(BaseModel):
     name: str
+    category: Optional[str] = "upakarma"
+    dosha_target: Optional[str] = None
+    indications: Optional[str] = None
     description: Optional[str] = None
     default_duration_minutes: int = 60
     suggested_price: Optional[Decimal] = None
@@ -22,6 +25,9 @@ class TherapyCreate(BaseModel):
 
 class TherapyUpdate(BaseModel):
     name: Optional[str] = None
+    category: Optional[str] = None
+    dosha_target: Optional[str] = None
+    indications: Optional[str] = None
     description: Optional[str] = None
     default_duration_minutes: Optional[int] = None
     suggested_price: Optional[Decimal] = None
@@ -32,6 +38,9 @@ class TherapyUpdate(BaseModel):
 class TherapyOut(BaseModel):
     id: str
     name: str
+    category: Optional[str] = "upakarma"
+    dosha_target: Optional[str] = None
+    indications: Optional[str] = None
     description: Optional[str] = None
     default_duration_minutes: int
     suggested_price: Optional[Decimal] = None
@@ -42,8 +51,10 @@ class TherapyOut(BaseModel):
         from_attributes = True
 
 
+@router.get("", response_model=list[TherapyOut])
 @router.get("/", response_model=list[TherapyOut])
 def list_therapies(
+    category: Optional[str] = None,
     active_only: bool = True,
     db: Session = Depends(get_db),
     _: User = AnyRole,
@@ -51,6 +62,8 @@ def list_therapies(
     query = db.query(Therapy)
     if active_only:
         query = query.filter(Therapy.is_active == True)  # noqa: E712
+    if category:
+        query = query.filter(Therapy.category == category)
     return query.order_by(Therapy.name).all()
 
 
@@ -78,6 +91,9 @@ def create_therapy(
     
     therapy = Therapy(
         name=body.name,
+        category=body.category or "upakarma",
+        dosha_target=body.dosha_target,
+        indications=body.indications,
         description=body.description,
         default_duration_minutes=body.default_duration_minutes,
         suggested_price=body.suggested_price,

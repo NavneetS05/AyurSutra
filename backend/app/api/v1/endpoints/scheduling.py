@@ -1,17 +1,19 @@
 """Scheduling endpoints — allocate, view, check-in, and record sessions."""
-from datetime import date, datetime
-from typing import Optional
+from datetime import date, datetime, timedelta
+from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.dependencies import (
     AdminOrReceptionist,
+    DoctorAdminOrReceptionist,
     StaffOnly,
     TherapistOnly,
     get_current_user,
+    AnyRole,
 )
 from app.db.session import get_db
 from app.models import (
@@ -23,6 +25,9 @@ from app.models import (
     TreatmentPlanItem,
     User,
     UserRole,
+    Consultation,
+    Room,
+    Staff,
 )
 from app.services.scheduler import SchedulingEngine
 
@@ -124,7 +129,7 @@ class SessionRecordCreate(BaseModel):
 def allocate_sessions(
     body: AllocateRequest,
     db: Session = Depends(get_db),
-    _: User = AdminOrReceptionist,
+    _: User = DoctorAdminOrReceptionist,
 ):
     """Allocate all sessions for a finalized treatment plan."""
     plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == body.treatment_plan_id).first()
@@ -271,7 +276,8 @@ def check_in(
     if session.status not in [SessionStatus.scheduled, SessionStatus.confirmed]:
         raise HTTPException(status_code=400, detail=f"Cannot check in session with status: {session.status}")
     session.status = SessionStatus.checked_in
-    session.actual_start = datetime.utcnow()
+    from app.models import now_ist
+    session.actual_start = now_ist()
 
     from app.models import AuditLog
     db.add(
@@ -304,7 +310,8 @@ def complete_session(
         raise HTTPException(status_code=400, detail="Session already completed")
 
     session.status = SessionStatus.completed
-    session.actual_end = datetime.utcnow()
+    from app.models import now_ist
+    session.actual_end = now_ist()
 
     record = SessionRecord(
         session_id=session_id,
@@ -472,3 +479,176 @@ def recommend_ranked_slots(
         )
         for r in ranked
     ]
+
+
+# ---------------------------------------------------------------------------
+# Daywise and Upcoming Patients
+# ---------------------------------------------------------------------------
+
+class DaywiseConsultation(BaseModel):
+    id: str
+    patient_id: str
+    patient_name: str
+    patient_phone: Optional[str] = None
+    doctor_id: str
+    doctor_name: str
+    scheduled_at: datetime
+    consultation_type: str
+    chief_complaint: Optional[str] = None
+    fee_paid: bool
+
+
+class DaywiseTherapySession(BaseModel):
+    id: str
+    patient_id: str
+    patient_name: str
+    patient_phone: Optional[str] = None
+    therapy_name: str
+    session_number: int
+    therapist_name: str
+    room_name: str
+    scheduled_start: datetime
+    scheduled_end: datetime
+    status: str
+
+
+class DaywiseScheduleOut(BaseModel):
+    date: str
+    day_name: str
+    is_today: bool
+    total_unique_patients: int
+    consultations: List[DaywiseConsultation]
+    therapy_sessions: List[DaywiseTherapySession]
+
+
+@router.get("/daywise", response_model=List[DaywiseScheduleOut])
+def get_daywise_schedule(
+    start_date: Optional[date] = Query(None, description="Start date (defaults to today)"),
+    days: int = Query(7, ge=1, le=30, description="Number of days to fetch"),
+    search: Optional[str] = Query(None, description="Filter by patient name"),
+    db: Session = Depends(get_db),
+    _: User = AnyRole,
+):
+    """
+    Daywise and upcoming patients view:
+    Returns scheduled Doctor Consultations and Panchakarma Therapy Sessions grouped by day.
+    """
+    base_date = start_date or date.today()
+    today_date = date.today()
+
+    range_start = datetime.combine(base_date, datetime.min.time())
+    range_end = datetime.combine(base_date + timedelta(days=days), datetime.max.time())
+
+    # 1. Fetch consultations
+    consultations_query = (
+        db.query(Consultation)
+        .filter(Consultation.scheduled_at >= range_start, Consultation.scheduled_at <= range_end)
+        .order_by(Consultation.scheduled_at)
+    )
+    all_consultations = consultations_query.all()
+
+    # 2. Fetch therapy sessions
+    sessions_query = (
+        db.query(TherapySession)
+        .filter(TherapySession.scheduled_start >= range_start, TherapySession.scheduled_start <= range_end)
+        .order_by(TherapySession.scheduled_start)
+    )
+    all_sessions = sessions_query.all()
+
+    results: List[DaywiseScheduleOut] = []
+
+    for d in range(days):
+        current_day = base_date + timedelta(days=d)
+        day_str = current_day.isoformat()
+        day_name = current_day.strftime("%A")
+        is_today = (current_day == today_date)
+
+        day_start = datetime.combine(current_day, datetime.min.time())
+        day_end = datetime.combine(current_day, datetime.max.time())
+
+        # Filter consultations on current_day
+        day_consultations: List[DaywiseConsultation] = []
+        patient_ids_set = set()
+
+        for c in all_consultations:
+            if day_start <= c.scheduled_at <= day_end:
+                pat = c.patient
+                pat_name = f"{pat.first_name} {pat.last_name}" if pat else "Patient"
+                pat_phone = pat.phone if pat else None
+                doc = c.doctor
+                doc_name = f"Dr. {doc.first_name} {doc.last_name}" if doc else "Doctor"
+
+                if search:
+                    term = search.lower()
+                    if term not in pat_name.lower() and term not in (pat_phone or ""):
+                        continue
+
+                patient_ids_set.add(c.patient_id)
+                day_consultations.append(
+                    DaywiseConsultation(
+                        id=c.id,
+                        patient_id=c.patient_id,
+                        patient_name=pat_name,
+                        patient_phone=pat_phone,
+                        doctor_id=c.doctor_id,
+                        doctor_name=doc_name,
+                        scheduled_at=c.scheduled_at,
+                        consultation_type=c.consultation_type.value if hasattr(c.consultation_type, "value") else str(c.consultation_type),
+                        chief_complaint=c.chief_complaint,
+                        fee_paid=c.fee_paid,
+                    )
+                )
+
+        # Filter therapy sessions on current_day
+        day_sessions: List[DaywiseTherapySession] = []
+        for s in all_sessions:
+            if day_start <= s.scheduled_start <= day_end:
+                # get patient from session -> plan_item -> plan -> consultation -> patient
+                patient = None
+                if s.plan_item and s.plan_item.plan and s.plan_item.plan.consultation:
+                    patient = s.plan_item.plan.consultation.patient
+
+                pat_id = patient.id if patient else ""
+                pat_name = f"{patient.first_name} {patient.last_name}" if patient else "Patient"
+                pat_phone = patient.phone if patient else None
+                th_name = f"{s.therapist.first_name} {s.therapist.last_name}" if s.therapist else "Therapist"
+                rm_name = s.room.name if s.room else "Room"
+                tp_name = s.plan_item.therapy.name if (s.plan_item and s.plan_item.therapy) else "Therapy"
+
+                if search:
+                    term = search.lower()
+                    if term not in pat_name.lower() and term not in (pat_phone or ""):
+                        continue
+
+                if pat_id:
+                    patient_ids_set.add(pat_id)
+
+                day_sessions.append(
+                    DaywiseTherapySession(
+                        id=s.id,
+                        patient_id=pat_id,
+                        patient_name=pat_name,
+                        patient_phone=pat_phone,
+                        therapy_name=tp_name,
+                        session_number=s.session_number,
+                        therapist_name=th_name,
+                        room_name=rm_name,
+                        scheduled_start=s.scheduled_start,
+                        scheduled_end=s.scheduled_end,
+                        status=s.status.value if hasattr(s.status, "value") else str(s.status),
+                    )
+                )
+
+        results.append(
+            DaywiseScheduleOut(
+                date=day_str,
+                day_name=day_name,
+                is_today=is_today,
+                total_unique_patients=len(patient_ids_set),
+                consultations=day_consultations,
+                therapy_sessions=day_sessions,
+            )
+        )
+
+    return results
+

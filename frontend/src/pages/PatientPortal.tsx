@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '@/lib/api'
+import { downloadPdf } from '@/lib/download'
 import {
   Calendar,
   Clock,
@@ -98,9 +99,14 @@ export default function PatientPortal() {
             <Sparkles size={13} />
             AyurSutra Patient Wellness Journey
           </span>
-          <h1 className="text-2xl md:text-3xl font-bold">
-            Namaste, {patient.first_name} {patient.last_name}
-          </h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl md:text-3xl font-bold">
+              Namaste, {patient.first_name} {patient.last_name}
+            </h1>
+            <span className="text-xs px-2.5 py-1 bg-white/20 text-white rounded-full font-bold font-mono">
+              Patient ID: {patient.patient_number || patient.uhid}
+            </span>
+          </div>
           <p className="text-xs md:text-sm text-emerald-100 mt-1">
             Registered Phone: {patient.phone} • {patient.email || 'Digital Portal'}
           </p>
@@ -140,15 +146,18 @@ export default function PatientPortal() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <a
-                  href={`${api.defaults.baseURL}/consultations/treatment-plans/${active_plan.id}/summary/pdf`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-lg text-xs font-semibold shadow-xs transition"
+                <button
+                  onClick={() =>
+                    downloadPdf(
+                      `/consultations/treatment-plans/${active_plan.id}/summary/pdf`,
+                      `Treatment_Summary_${patient.patient_number || patient.uhid || 'Plan'}.pdf`
+                    )
+                  }
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer"
                 >
                   <Download size={13} />
                   Course Summary PDF
-                </a>
+                </button>
                 <span className="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
                   Active Protocol
                 </span>
@@ -239,16 +248,19 @@ export default function PatientPortal() {
                 <p className="text-xs font-semibold text-gray-700 mb-2">Payment Receipts</p>
                 {payments.map((p: any) => (
                   <div key={p.id} className="flex items-center justify-between text-xs py-1.5">
-                    <span className="text-gray-500">{p.receipt_number || 'Receipt'}</span>
-                    <a
-                      href={`http://localhost:8000/api/v1/billing/receipts/${p.receipt_number}/pdf`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-emerald-700 hover:text-emerald-800 font-medium inline-flex items-center gap-1"
+                    <span className="text-gray-500 font-mono">{p.receipt_number || 'Receipt'}</span>
+                    <button
+                      onClick={() =>
+                        downloadPdf(
+                          `/billing/receipts/${p.receipt_number}/pdf`,
+                          `Receipt_${p.receipt_number}.pdf`
+                        )
+                      }
+                      className="text-emerald-700 hover:text-emerald-800 font-medium inline-flex items-center gap-1 cursor-pointer"
                     >
                       <Download size={12} />
-                      View Slip
-                    </a>
+                      Download Slip
+                    </button>
                   </div>
                 ))}
               </div>

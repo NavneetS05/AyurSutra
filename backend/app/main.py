@@ -37,4 +37,11 @@ app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": settings.CLINIC_NAME}
+    from app.models import now_ist
+    ist_time = now_ist()
+    return {
+        "status": "ok",
+        "service": settings.CLINIC_NAME,
+        "server_time_ist": ist_time.strftime("%Y-%m-%d %H:%M:%S IST"),
+        "timezone": "Asia/Kolkata (IST, UTC+05:30)",
+    }

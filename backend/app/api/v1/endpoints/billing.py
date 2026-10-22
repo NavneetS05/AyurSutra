@@ -8,7 +8,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.dependencies import AdminOrReceptionist, AnyRole
+from app.core.dependencies import AdminOrReceptionist, DoctorAdminOrReceptionist, AnyRole, AnyRoleFlexible
+from app.services.pdf_generator import generate_receipt_pdf as build_receipt_pdf
 from app.db.session import get_db
 from app.models import (
     Consultation,
@@ -91,7 +92,7 @@ class PaymentOut(BaseModel):
 def create_package(
     body: PackageCreate,
     db: Session = Depends(get_db),
-    current_user: User = AdminOrReceptionist,
+    current_user: User = DoctorAdminOrReceptionist,
 ):
     plan = db.query(TreatmentPlan).filter(TreatmentPlan.id == body.treatment_plan_id).first()
     if not plan:
@@ -180,6 +181,12 @@ def record_payment(
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
+    if body.method != PaymentMethod.cash:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{body.method.value.upper()} payment method is coming soon. Only Cash payment is currently accepted at Front Desk.",
+        )
+
     if not body.package_id and not body.consultation_id:
         raise HTTPException(status_code=400, detail="Must associate payment with a package or consultation")
 
@@ -247,10 +254,10 @@ def record_payment(
 
 
 @router.get("/receipts/{receipt_number}/pdf")
-def generate_receipt_pdf(
+def generate_receipt_pdf_endpoint(
     receipt_number: str,
     db: Session = Depends(get_db),
-    _: User = AnyRole,
+    _: User = AnyRoleFlexible,
 ):
     receipt = db.query(Receipt).filter(Receipt.receipt_number == receipt_number).first()
     if not receipt:
@@ -259,82 +266,30 @@ def generate_receipt_pdf(
     payment = receipt.payment
     patient = payment.patient
 
-    # Generate clean HTML receipt
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <title>Receipt {receipt.receipt_number}</title>
-        <style>
-            body {{ font-family: 'Helvetica', Arial, sans-serif; padding: 40px; color: #333; }}
-            .header {{ border-bottom: 2px solid #6b7f5e; padding-bottom: 20px; margin-bottom: 30px; }}
-            .title {{ font-size: 24px; font-weight: bold; color: #4a5c40; }}
-            .sub {{ font-size: 13px; color: #666; }}
-            .grid {{ display: flex; justify-content: space-between; margin-bottom: 30px; }}
-            .box {{ width: 48%; }}
-            .box h4 {{ margin: 0 0 8px 0; font-size: 14px; text-transform: uppercase; color: #888; }}
-            .box p {{ margin: 3px 0; font-size: 14px; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
-            th {{ background: #f5f4f0; text-align: left; padding: 10px; font-size: 13px; border-bottom: 1px solid #ddd; }}
-            td {{ padding: 12px 10px; font-size: 14px; border-bottom: 1px solid #eee; }}
-            .total-row td {{ font-weight: bold; font-size: 16px; border-top: 2px solid #4a5c40; }}
-            .footer {{ margin-top: 50px; font-size: 12px; color: #999; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }}
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <div class="title">{settings.CLINIC_NAME}</div>
-            <div class="sub">Official Payment Receipt & Slip</div>
-        </div>
-        <div class="grid">
-            <div class="box">
-                <h4>Receipt Details</h4>
-                <p><strong>Receipt #:</strong> {receipt.receipt_number}</p>
-                <p><strong>Date:</strong> {payment.paid_at.strftime('%d %B %Y, %I:%M %p')}</p>
-                <p><strong>Payment Method:</strong> {payment.method.value.upper()}</p>
-                {f'<p><strong>Reference:</strong> {payment.reference_number}</p>' if payment.reference_number else ''}
-            </div>
-            <div class="box">
-                <h4>Billed To</h4>
-                <p><strong>Patient:</strong> {patient.first_name} {patient.last_name}</p>
-                <p><strong>Phone:</strong> {patient.phone}</p>
-                {f'<p><strong>Email:</strong> {patient.email}</p>' if patient.email else ''}
-            </div>
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Description</th>
-                    <th style="text-align: right;">Amount (INR)</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td>{'Therapy Package Payment' if payment.package_id else 'Doctor Consultation Fee'}</td>
-                    <td style="text-align: right;">₹{float(payment.amount):,.2f}</td>
-                </tr>
-                <tr class="total-row">
-                    <td>Total Paid</td>
-                    <td style="text-align: right;">₹{float(payment.amount):,.2f}</td>
-                </tr>
-            </tbody>
-        </table>
-        <div class="footer">
-            Thank you for choosing {settings.CLINIC_NAME}. May health and vitality be with you.
-        </div>
-    </body>
-    </html>
-    """
+    description = "Doctor Consultation Fee"
+    if payment.package_id:
+        pkg = db.query(PatientPackage).filter(PatientPackage.id == payment.package_id).first()
+        description = f"Therapy Package Payment ({pkg.name})" if pkg else "Therapy Package Payment"
 
-    try:
-        from weasyprint import HTML
-        pdf_bytes = HTML(string=html_content).write_pdf()
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={receipt.receipt_number}.pdf"},
-        )
-    except Exception:
-        # Fallback to returning HTML for printing if WeasyPrint OS library has DLL dependencies on Windows
-        return Response(content=html_content, media_type="text/html")
+    pdf_bytes = build_receipt_pdf(
+        receipt_number=receipt.receipt_number,
+        paid_at=payment.paid_at,
+        method=payment.method.value if payment.method else "cash",
+        amount=float(payment.amount),
+        reference_number=payment.reference_number,
+        patient_name=f"{patient.first_name} {patient.last_name}" if patient else "Valued Patient",
+        patient_number=patient.patient_number or patient.uhid if patient else None,
+        patient_phone=patient.phone if patient else None,
+        patient_email=patient.email if patient else None,
+        description=description,
+        clinic_name=settings.CLINIC_NAME,
+    )
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="Receipt_{receipt.receipt_number}.pdf"',
+            "Content-Type": "application/pdf",
+        },
+    )

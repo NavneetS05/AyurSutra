@@ -13,9 +13,10 @@ elif db_url.startswith("postgresql://") and not db_url.startswith("postgresql+ps
 if db_url.startswith("sqlite"):
     engine = create_engine(db_url, connect_args={"check_same_thread": False})
 else:
-    # Neon Serverless PostgreSQL recommended pooling options
+    # Neon Serverless PostgreSQL recommended pooling options with IST timezone
     engine = create_engine(
         db_url,
+        connect_args={"options": "-c timezone=Asia/Kolkata"},
         pool_pre_ping=True,
         pool_recycle=300,
     )

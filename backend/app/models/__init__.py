@@ -1,6 +1,7 @@
 import enum
 import uuid
 from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     BigInteger,
@@ -89,8 +90,16 @@ def uuid_str() -> str:
     return str(uuid.uuid4())
 
 
-def now_utc() -> datetime:
-    return datetime.utcnow()
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def now_ist() -> datetime:
+    """Returns current datetime in Indian Standard Time (IST, UTC+05:30)."""
+    return datetime.now(IST).replace(tzinfo=None)
+
+
+# Alias so all model defaults (created_at, updated_at, paid_at, generated_at) use IST
+now_utc = now_ist
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +116,9 @@ class User(Base):
     hashed_password = Column(String(255), nullable=False)
     role = Column(Enum(UserRole), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    is_online = Column(Boolean, default=True, nullable=False)
+    working_hours_start = Column(String(10), default="09:00", nullable=True)
+    working_hours_end = Column(String(10), default="18:00", nullable=True)
     created_at = Column(DateTime, default=now_utc, nullable=False)
     updated_at = Column(DateTime, default=now_utc, onupdate=now_utc, nullable=False)
 
@@ -192,9 +204,14 @@ class Room(Base):
     facilities = Column(Text, nullable=True)  # comma-separated tags
     capacity = Column(Integer, default=1, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    status = Column(String(50), default="active", nullable=False)  # active, maintenance, cleaning
+    assigned_doctor_id = Column(String(36), ForeignKey("staff.id"), nullable=True)
+    assigned_therapist_id = Column(String(36), ForeignKey("staff.id"), nullable=True)
     created_at = Column(DateTime, default=now_utc, nullable=False)
 
     therapy_sessions = relationship("TherapySession", back_populates="room")
+    assigned_doctor = relationship("Staff", foreign_keys=[assigned_doctor_id])
+    assigned_therapist = relationship("Staff", foreign_keys=[assigned_therapist_id])
 
 
 class Therapy(Base):
@@ -202,6 +219,9 @@ class Therapy(Base):
 
     id = Column(String(36), primary_key=True, default=uuid_str)
     name = Column(String(200), unique=True, nullable=False)
+    category = Column(String(50), default="upakarma", nullable=True)  # pradhana_karma, poorva_karma, paschat_karma, upakarma
+    dosha_target = Column(String(100), nullable=True)  # e.g. Vata, Pitta, Kapha
+    indications = Column(Text, nullable=True)  # classical conditions & indications
     description = Column(Text, nullable=True)
     default_duration_minutes = Column(Integer, nullable=False, default=60)
     suggested_price = Column(Numeric(10, 2), nullable=True)
@@ -237,6 +257,7 @@ class Patient(Base):
     __tablename__ = "patients"
 
     id = Column(String(36), primary_key=True, default=uuid_str)
+    patient_number = Column(String(50), unique=True, nullable=True, index=True)
     user_id = Column(String(36), ForeignKey("users.id"), unique=True, nullable=True)
     first_name = Column(String(100), nullable=False)
     last_name = Column(String(100), nullable=False)
@@ -257,6 +278,11 @@ class Patient(Base):
     consultations = relationship("Consultation", back_populates="patient")
     packages = relationship("PatientPackage", back_populates="patient")
     payments = relationship("Payment", back_populates="patient")
+
+    @property
+    def uhid(self) -> str:
+        return self.patient_number or (f"AYUR-{self.id[:8].upper()}" if self.id else "AYUR-PATIENT")
+
 
 
 class Consultation(Base):

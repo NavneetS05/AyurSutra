@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     CLINIC_NAME: str = "AyurSutra Panchakarma Centre"
+    TIMEZONE: str = "Asia/Kolkata"
     CLINIC_OPEN_TIME: str = "08:00"
     CLINIC_CLOSE_TIME: str = "20:00"
 

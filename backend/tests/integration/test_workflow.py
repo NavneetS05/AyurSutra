@@ -27,28 +27,15 @@ from app.models import (
 
 from sqlalchemy.pool import StaticPool
 
-engine = create_engine(
-    "sqlite:///:memory:",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+from tests.conftest import TestSessionLocal, test_engine
 
-
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
-client = TestClient(app)
+TestingSessionLocal = TestSessionLocal
+engine = test_engine
 
 
 @pytest.fixture(autouse=True)
 def setup_database():
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     db = TestingSessionLocal()
 
@@ -100,7 +87,10 @@ def setup_database():
 
     yield
 
-    Base.metadata.drop_all(bind=engine)
+    # Clean records without dropping schema
+    with engine.begin() as conn:
+        for table in reversed(Base.metadata.sorted_tables):
+            conn.execute(table.delete())
 
 
 def get_token(user_id: str, role: str) -> dict:
@@ -108,7 +98,7 @@ def get_token(user_id: str, role: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_full_patient_and_scheduling_lifecycle():
+def test_full_patient_and_scheduling_lifecycle(client):
     db = TestingSessionLocal()
     admin_u = db.query(User).filter(User.email == "admin@test.com").first()
     doc_u = db.query(User).filter(User.email == "doc@test.com").first()

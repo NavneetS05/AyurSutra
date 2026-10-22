@@ -196,8 +196,11 @@ class TestSlotRecommendations:
 
         # Mock therapist working every day
         mock_therapist = MagicMock(spec=Staff, id="st1", first_name="Anitha", last_name="K")
-        mock_avail = MagicMock(spec=StaffAvailability, weekday=date.today().weekday(), start_time=time(8, 0), end_time=time(18, 0), leave_date=None)
-        mock_therapist.availabilities = [mock_avail]
+        mock_availabilities = [
+            MagicMock(spec=StaffAvailability, weekday=w, start_time=time(8, 0), end_time=time(18, 0), leave_date=None)
+            for w in range(7)
+        ]
+        mock_therapist.availabilities = mock_availabilities
         mock_tt = MagicMock(spec=TherapistTherapy, therapy_id="th1")
         mock_therapist.authorized_therapies = [mock_tt]
 
@@ -215,7 +218,7 @@ class TestSlotRecommendations:
             therapy_id="th1",
             patient_id="p1",
             duration_minutes=60,
-            preferred_start_date=date.today(),
+            preferred_start_date=date.today() + timedelta(days=1),
             top_n=3,
         )
 

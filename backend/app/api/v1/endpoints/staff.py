@@ -62,12 +62,16 @@ class StaffOut(BaseModel):
     qualification: Optional[str] = None
     is_therapist: bool
     is_doctor: bool
+    is_online: bool = True
+    working_hours_start: Optional[str] = "09:00"
+    working_hours_end: Optional[str] = "18:00"
     authorized_therapy_ids: list[str] = []
 
     class Config:
         from_attributes = True
 
 
+@router.get("", response_model=list[StaffOut])
 @router.get("/", response_model=list[StaffOut])
 def list_staff(
     is_therapist: Optional[bool] = None,
@@ -85,6 +89,9 @@ def list_staff(
     results = []
     for s in staff_list:
         auth_ids = [tt.therapy_id for tt in s.authorized_therapies]
+        is_on = getattr(s.user, "is_online", True) if getattr(s.user, "is_online", True) is not None else True
+        wh_start = getattr(s.user, "working_hours_start", "09:00") or "09:00"
+        wh_end = getattr(s.user, "working_hours_end", "18:00") or "18:00"
         results.append(
             StaffOut(
                 id=s.id,
@@ -97,6 +104,9 @@ def list_staff(
                 qualification=s.qualification,
                 is_therapist=s.is_therapist,
                 is_doctor=s.is_doctor,
+                is_online=is_on,
+                working_hours_start=wh_start,
+                working_hours_end=wh_end,
                 authorized_therapy_ids=auth_ids,
             )
         )
@@ -203,3 +213,56 @@ def set_authorized_therapies(
         db.add(TherapistTherapy(staff_id=staff_id, therapy_id=tid))
     db.commit()
     return {"message": "Authorized therapies updated", "count": len(therapy_ids)}
+
+
+class StaffWorkingHoursUpdate(BaseModel):
+    working_hours_start: str
+    working_hours_end: str
+
+
+@router.patch("/{staff_id}/working-hours", response_model=StaffOut)
+def adjust_staff_hours_endpoint(
+    staff_id: str,
+    body: StaffWorkingHoursUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = AdminOnly,
+):
+    """Admin endpoint to adjust the working hours of a staff member."""
+    from app.models import AuditLog
+
+    staff = db.query(Staff).filter(Staff.id == staff_id).first()
+    if not staff:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+    if staff.user:
+        staff.user.working_hours_start = body.working_hours_start
+        staff.user.working_hours_end = body.working_hours_end
+
+    audit = AuditLog(
+        user_id=current_user.id,
+        action="ADJUST_STAFF_WORKING_HOURS",
+        entity_type="Staff",
+        entity_id=staff.id,
+        detail=f"Admin adjusted working hours for '{staff.first_name} {staff.last_name}' to {body.working_hours_start} - {body.working_hours_end}",
+    )
+    db.add(audit)
+    db.commit()
+    db.refresh(staff)
+
+    auth_ids = [tt.therapy_id for tt in staff.authorized_therapies]
+    return StaffOut(
+        id=staff.id,
+        user_id=staff.user_id,
+        first_name=staff.first_name,
+        last_name=staff.last_name,
+        email=staff.user.email if staff.user else "",
+        role=staff.user.role.value if staff.user else "",
+        specialization=staff.specialization,
+        qualification=staff.qualification,
+        is_therapist=staff.is_therapist,
+        is_doctor=staff.is_doctor,
+        is_online=staff.user.is_online if staff.user else True,
+        working_hours_start=staff.user.working_hours_start if staff.user else "09:00",
+        working_hours_end=staff.user.working_hours_end if staff.user else "18:00",
+        authorized_therapy_ids=auth_ids,
+    )

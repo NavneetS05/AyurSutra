@@ -6,7 +6,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.dependencies import AdminOrReceptionist, DoctorOnly, StaffOnly, AnyRole
+from app.core.dependencies import AdminOrReceptionist, DoctorOnly, StaffOnly, AnyRole, AnyRoleFlexible
+from app.services.pdf_generator import generate_treatment_summary_pdf as build_treatment_summary_pdf
 from app.db.session import get_db
 from app.models import (
     Consultation,
@@ -17,6 +18,7 @@ from app.models import (
     TreatmentPlanItem,
     User,
     UserRole,
+    AuditLog,
 )
 
 router = APIRouter(prefix="/consultations", tags=["Consultations & Treatment Plans"])
@@ -34,6 +36,8 @@ class ConsultationCreate(BaseModel):
     consultation_type: ConsultationType = ConsultationType.initial
     consultation_fee: Decimal = Decimal("500.00")
     chief_complaint: Optional[str] = None
+    collect_payment: bool = False
+    payment_method: Optional[str] = "cash"
 
 
 class ConsultationNotesUpdate(BaseModel):
@@ -95,6 +99,7 @@ class ConsultationOut(BaseModel):
     id: str
     patient_id: str
     patient_name: str
+    patient_number: Optional[str] = None
     doctor_id: str
     doctor_name: str
     consultation_type: ConsultationType
@@ -121,7 +126,7 @@ class ConsultationOut(BaseModel):
 def book_consultation(
     body: ConsultationCreate,
     db: Session = Depends(get_db),
-    _: User = AdminOrReceptionist,
+    current_user: User = AdminOrReceptionist,
 ):
     patient = db.query(Patient).filter(Patient.id == body.patient_id).first()
     if not patient:
@@ -138,8 +143,52 @@ def book_consultation(
         consultation_type=body.consultation_type,
         consultation_fee=body.consultation_fee,
         chief_complaint=body.chief_complaint,
+        fee_paid=body.collect_payment and (body.payment_method or "cash").lower() == "cash",
     )
     db.add(consultation)
+    db.flush()
+
+    if body.collect_payment:
+        pm = (body.payment_method or "cash").lower()
+        if pm in ("upi", "card", "bank_transfer"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{pm.upper()} payment method is coming soon. Only Cash payment is accepted at Front Desk.",
+            )
+        import uuid
+        from app.models import Payment, PaymentMethod, Receipt
+        payment = Payment(
+            patient_id=patient.id,
+            consultation_id=consultation.id,
+            amount=body.consultation_fee,
+            method=PaymentMethod.cash,
+            notes="Front Desk Cash collection for Doctor Consultation",
+        )
+        db.add(payment)
+        db.flush()
+
+        receipt_no = f"REC-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+        receipt = Receipt(payment_id=payment.id, receipt_number=receipt_no)
+        db.add(receipt)
+
+        audit_pay = AuditLog(
+            user_id=current_user.id,
+            action="RECORD_PAYMENT",
+            entity_type="Payment",
+            entity_id=payment.id,
+            detail=f"Collected Cash payment of INR {body.consultation_fee} for consultation. Receipt: {receipt_no}",
+        )
+        db.add(audit_pay)
+
+    audit = AuditLog(
+        user_id=current_user.id,
+        action="BOOK_APPOINTMENT",
+        entity_type="Consultation",
+        entity_id=consultation.id,
+        detail=f"Booked appointment for '{patient.first_name} {patient.last_name}' with Dr. {doctor.first_name} {doctor.last_name} (Cash Paid: {consultation.fee_paid})",
+    )
+    db.add(audit)
+
     db.commit()
     db.refresh(consultation)
 
@@ -147,6 +196,7 @@ def book_consultation(
         id=consultation.id,
         patient_id=patient.id,
         patient_name=f"{patient.first_name} {patient.last_name}",
+        patient_number=patient.patient_number or patient.uhid,
         doctor_id=doctor.id,
         doctor_name=f"{doctor.first_name} {doctor.last_name}",
         consultation_type=consultation.consultation_type,
@@ -193,6 +243,7 @@ def list_consultations(
                 id=c.id,
                 patient_id=c.patient.id if c.patient else "",
                 patient_name=f"{c.patient.first_name} {c.patient.last_name}" if c.patient else "Unknown",
+                patient_number=c.patient.patient_number or c.patient.uhid if c.patient else None,
                 doctor_id=c.doctor.id if c.doctor else "",
                 doctor_name=f"{c.doctor.first_name} {c.doctor.last_name}" if c.doctor else "Unknown",
                 consultation_type=c.consultation_type,
@@ -231,6 +282,7 @@ def update_consultation_notes(
         id=consultation.id,
         patient_id=consultation.patient.id if consultation.patient else "",
         patient_name=f"{consultation.patient.first_name} {consultation.patient.last_name}" if consultation.patient else "",
+        patient_number=consultation.patient.patient_number or consultation.patient.uhid if consultation.patient else None,
         doctor_id=consultation.doctor.id if consultation.doctor else "",
         doctor_name=f"{consultation.doctor.first_name} {consultation.doctor.last_name}" if consultation.doctor else "",
         consultation_type=consultation.consultation_type,
@@ -435,12 +487,13 @@ def get_treatment_summary(
         })
         for s in item.sessions:
             total_planned += 1
-            if s.status.value == "completed":
+            status_val = s.status.value if hasattr(s.status, "value") else str(s.status)
+            if status_val == "completed":
                 completed_count += 1
 
             therapist_name = (
-                f"{s.therapist.user.first_name} {s.therapist.user.last_name}"
-                if s.therapist and s.therapist.user
+                f"{s.therapist.first_name} {s.therapist.last_name}"
+                if s.therapist
                 else "Unassigned"
             )
             room_name = s.room.name if s.room else "Unassigned"
@@ -449,8 +502,8 @@ def get_treatment_summary(
                 "session_id": s.id,
                 "session_number": s.session_number,
                 "therapy_name": item.therapy.name if item.therapy else "Therapy",
-                "scheduled_at": s.scheduled_at.isoformat() if s.scheduled_at else None,
-                "status": s.status.value,
+                "scheduled_at": s.scheduled_start.isoformat() if s.scheduled_start else None,
+                "status": status_val,
                 "therapist_name": therapist_name,
                 "room_name": room_name,
                 "actual_start": s.actual_start.isoformat() if s.actual_start else None,
@@ -487,14 +540,15 @@ def get_treatment_summary(
             "id": patient.id,
             "name": f"{patient.first_name} {patient.last_name}",
             "uhid": patient.uhid,
+            "patient_number": patient.patient_number or patient.uhid,
             "phone": patient.phone,
             "email": patient.email,
-            "gender": patient.gender,
+            "gender": patient.gender.value if hasattr(patient.gender, 'value') else str(patient.gender or 'N/A'),
             "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
         },
         "doctor": {
             "id": doctor.id if doctor else None,
-            "name": f"{doctor.user.first_name} {doctor.user.last_name}" if doctor and doctor.user else "Consulting Vaidya",
+            "name": f"{doctor.first_name} {doctor.last_name}" if doctor else "Consulting Vaidya",
             "specialization": doctor.specialization if doctor else "Ayurvedic Medicine",
         },
         "clinical_assessment": {
@@ -521,154 +575,21 @@ def get_treatment_summary(
 def get_treatment_summary_pdf(
     plan_id: str,
     db: Session = Depends(get_db),
-    _: User = AnyRole,
+    _: User = AnyRoleFlexible,
 ):
     """
-    Renders an official, printable Clinical Treatment Summary & Panchakarma Discharge Report.
+    Renders an official, printable Clinical Treatment Summary & Panchakarma Discharge Report PDF.
     """
     data = get_treatment_summary(plan_id=plan_id, db=db, _=_)
     patient = data["patient"]
-    doctor = data["doctor"]
-    assessment = data["clinical_assessment"]
-    attendance = data["attendance"]
-    prescriptions = data["prescriptions"]
-    sessions = data["sessions"]
+    pdf_bytes = build_treatment_summary_pdf(data=data, clinic_name=settings.CLINIC_NAME)
 
-    session_rows = "".join([
-        f"""
-        <tr>
-            <td>#{s['session_number']} - {s['therapy_name']}</td>
-            <td>{s['scheduled_at'][:10] if s['scheduled_at'] else '—'}</td>
-            <td>{s['therapist_name']}</td>
-            <td><strong>{s['status'].upper()}</strong></td>
-            <td>{s['observations'] or s['oils_used'] or '—'}</td>
-        </tr>
-        """
-        for s in sessions
-    ])
-
-    prescription_rows = "".join([
-        f"""
-        <li><strong>{p['therapy_name']}</strong>: {p['session_count']} sessions ({p['duration_minutes']} mins each)</li>
-        """
-        for p in prescriptions
-    ])
-
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <title>Treatment Summary - {patient['name']}</title>
-        <style>
-            body {{ font-family: 'Helvetica Neue', Arial, sans-serif; padding: 35px; color: #2d3748; line-height: 1.5; }}
-            .clinic-header {{ border-bottom: 2px solid #556b2f; padding-bottom: 15px; margin-bottom: 25px; }}
-            .clinic-name {{ font-size: 24px; font-weight: bold; color: #3b4d24; }}
-            .report-title {{ font-size: 14px; text-transform: uppercase; letter-spacing: 1.5px; color: #718096; margin-top: 4px; }}
-            .grid {{ display: flex; justify-content: space-between; margin-bottom: 20px; }}
-            .col {{ width: 48%; background: #f7fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0; }}
-            .col h4 {{ margin: 0 0 8px 0; font-size: 13px; text-transform: uppercase; color: #4a5568; border-bottom: 1px solid #edf2f7; padding-bottom: 4px; }}
-            .col p {{ margin: 4px 0; font-size: 13px; }}
-            .dosha-tag {{ display: inline-block; padding: 2px 8px; background: #e6fffa; color: #234e52; border-radius: 4px; font-weight: bold; font-size: 12px; }}
-            .section {{ margin-top: 25px; }}
-            .section-title {{ font-size: 15px; font-weight: bold; color: #2d3748; border-bottom: 1px solid #cbd5e0; padding-bottom: 5px; margin-bottom: 10px; }}
-            .attendance-box {{ background: #f0fff4; border: 1px solid #c6f6d5; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; }}
-            .attendance-rate {{ font-size: 22px; font-weight: bold; color: #22543d; }}
-            .compliance-note {{ font-size: 11px; color: #718096; font-style: italic; margin-top: 4px; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }}
-            th {{ background: #edf2f7; text-align: left; padding: 8px 10px; border-bottom: 2px solid #cbd5e0; }}
-            td {{ padding: 8px 10px; border-bottom: 1px solid #e2e8f0; }}
-            .rx-box {{ background: #fffaf0; border: 1px solid #feebc8; padding: 12px 16px; border-radius: 8px; font-size: 13px; margin-top: 15px; }}
-            .sign-area {{ margin-top: 50px; display: flex; justify-content: space-between; }}
-            .sign-box {{ width: 220px; border-top: 1px dashed #a0aec0; text-align: center; padding-top: 8px; font-size: 12px; }}
-        </style>
-    </head>
-    <body>
-        <div class="clinic-header">
-            <div class="clinic-name">{settings.CLINIC_NAME}</div>
-            <div class="report-title">Panchakarma Clinical Discharge & Treatment Summary</div>
-        </div>
-
-        <div class="grid">
-            <div class="col">
-                <h4>Patient Demographics</h4>
-                <p><strong>Name:</strong> {patient['name']}</p>
-                <p><strong>UHID:</strong> {patient['uhid']}</p>
-                <p><strong>Contact:</strong> {patient['phone']}</p>
-                <p><strong>Gender:</strong> {patient['gender'].capitalize()}</p>
-            </div>
-            <div class="col">
-                <h4>Clinical Assessment</h4>
-                <p><strong>Consulting Vaidya:</strong> Dr. {doctor['name']}</p>
-                <p><strong>Prakriti / Vikriti:</strong> <span class="dosha-tag">{assessment['prakriti'] or 'Pitta-Kapha'}</span> / <span class="dosha-tag">{assessment['vikriti'] or 'Vata'}</span></p>
-                <p><strong>Chief Complaint:</strong> {assessment['chief_complaint'] or 'Chronic Stress & Musculoskeletal Fatigue'}</p>
-            </div>
-        </div>
-
-        <div class="attendance-box">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                    <span style="font-size: 13px; font-weight: bold; color: #276749;">Session Attendance Progress</span>
-                    <div class="compliance-note">* {attendance['compliance_notice']}</div>
-                </div>
-                <div class="attendance-rate">{attendance['session_attendance_percentage']}%</div>
-            </div>
-            <p style="margin: 6px 0 0 0; font-size: 12px; color: #2f855a;">
-                Completed {attendance['completed_sessions']} of {attendance['total_planned_sessions']} planned therapeutic sessions.
-            </p>
-        </div>
-
-        <div class="section">
-            <div class="section-title">Prescribed Panchakarma Protocol: {data['title']}</div>
-            <ul style="margin: 6px 0 0 20px; font-size: 13px;">
-                {prescription_rows}
-            </ul>
-        </div>
-
-        <div class="section">
-            <div class="section-title">Therapy Session Log & Clinical Observations</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Procedure</th>
-                        <th>Date</th>
-                        <th>Therapist</th>
-                        <th>Status</th>
-                        <th>Clinical Observations / Oils</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {session_rows or '<tr><td colspan="5" style="text-align:center;">No sessions scheduled yet.</td></tr>'}
-                </tbody>
-            </table>
-        </div>
-
-        <div class="rx-box">
-            <h4 style="margin: 0 0 6px 0; font-size: 13px; color: #744210;">Discharge Care Protocol (Pathya & Vihara)</h4>
-            <p><strong>Dietary Protocol (Pathya):</strong> {data['diet_recommendations'] or 'Warm, light meals; avoid deep-fried foods, cold beverages, and curd at night.'}</p>
-            <p><strong>Lifestyle Protocol (Vihara):</strong> {data['lifestyle_recommendations'] or 'Early sleeping before 10 PM; gentle morning pranayama; avoid heavy exertion for 7 days post-treatment.'}</p>
-        </div>
-
-        <div class="sign-area">
-            <div class="sign-box">
-                Patient / Guardian Signature
-            </div>
-            <div class="sign-box">
-                Authorized Ayurvedic Physician
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-    try:
-        from weasyprint import HTML
-        pdf_bytes = HTML(string=html_content).write_pdf()
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename=Treatment_Summary_{patient['uhid']}.pdf"},
-        )
-    except Exception:
-        # Graceful fallback to HTML print layout
-        return Response(content=html_content, media_type="text/html")
+    file_tag = patient.get("patient_number") or patient.get("uhid") or "Patient"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="Treatment_Summary_{file_tag}.pdf"',
+            "Content-Type": "application/pdf",
+        },
+    )
