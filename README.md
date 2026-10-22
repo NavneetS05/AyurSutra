@@ -30,36 +30,36 @@ Unlike generic clinic management software, AyurSutra solves the unique operation
 
 ```mermaid
 graph TD
-    subgraph Client Layer
-        A[React 19 + TypeScript SPA]
-        B[TanStack Query v5 + TailwindCSS v4]
-        C[Lucide Icons + Recharts]
+    subgraph Client["Client Layer"]
+        A["React 19 + TypeScript SPA"]
+        B["TanStack Query v5 + TailwindCSS v4"]
+        C["Lucide Icons + Recharts"]
     end
 
-    subgraph API & Gateway Layer
-        D[FastAPI REST Engine :8000]
-        E[JWT RBAC & Presence Guard]
-        F[Audit Logging Middleware]
+    subgraph Gateway["API & Gateway Layer"]
+        D["FastAPI REST Engine :8000"]
+        E["JWT RBAC & Presence Guard"]
+        F["Audit Logging Middleware"]
     end
 
-    subgraph Core Services
-        G[Constraint-Satisfaction Scheduler]
-        H[ReportLab PDF Generation Engine]
-        I[Leave Reallocation Service]
+    subgraph Services["Core Services"]
+        G["Constraint-Satisfaction Scheduler"]
+        H["ReportLab PDF Generation Engine"]
+        I["Leave Reallocation Service"]
     end
 
-    subgraph Data Tier
-        J[(Lakebase PostgreSQL 16 - Neon)]
-        K[16 Domain Tables + Full Audit Trails]
+    subgraph Database["Data Tier"]
+        J[("Lakebase PostgreSQL 16 (Neon)")]
+        K["16 Domain Tables + Full Audit Trails"]
     end
 
-    Client Layer -->|HTTP / REST + Bearer Token| D
+    A -->|"HTTP / REST + Bearer Token"| D
     D --> E
     E --> F
     F --> G
     F --> H
     F --> I
-    D -->|SQLAlchemy 2.0 ORM| J
+    D -->|"SQLAlchemy 2.0 ORM"| J
     J --- K
 ```
 
